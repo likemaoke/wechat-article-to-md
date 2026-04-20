@@ -26,6 +26,22 @@ def sanitize_filename(name):
     return name or 'article'
 
 
+def clear_images_directory(img_dir):
+    """清理图片目录中的所有图片文件"""
+    if not img_dir or not img_dir.exists():
+        return
+    try:
+        image_files = []
+        for ext in ['*.jpg', '*.jpeg', '*.png', '*.gif', '*.webp', '*.bmp']:
+            image_files.extend(img_dir.glob(ext))
+        for file_path in image_files:
+            file_path.unlink()
+        if image_files:
+            print(f"  已清理 {len(image_files)} 个旧图片文件")
+    except Exception as e:
+        print(f"  清理图片目录失败: {e}")
+
+
 def download_image(url, img_dir, index, article_id=None):
     """下载图片到本地
 
@@ -99,87 +115,8 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                     else:
                         img_map[src] = f"images/{local_img}"
 
-    # 按照元素在 DOM 中的顺序遍历
-    def process_element(element):
-        nonlocal md_content
-        tag_name = element.name
-
-        # 跳过已处理的元素（在列表、引用等容器内）
-        if element.find_parent(['ul', 'ol', 'blockquote', 'li']):
-            return
-
-        # 标题
-        if tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            level = int(tag_name[1])
-            text = element.get_text(strip=True)
-            md_content.append(f"{'#' * level} {text}\n")
-
-        # 段落
-        elif tag_name == 'p':
-            # 处理段落内的内联元素
-            content = process_inline_elements(element)
-            if content:
-                md_content.append(content + "\n")
-
-        # 无序列表
-        elif tag_name == 'ul':
-            for li in element.find_all('li', recursive=False):
-                text = li.get_text(strip=True)
-                md_content.append(f"- {text}\n")
-
-        # 有序列表
-        elif tag_name == 'ol':
-            for i, li in enumerate(element.find_all('li', recursive=False), 1):
-                text = li.get_text(strip=True)
-                md_content.append(f"{i}. {text}\n")
-
-        # 引用
-        elif tag_name == 'blockquote':
-            text = element.get_text(strip=True)
-            if text:
-                md_content.append(f"> {text}\n")
-
-        # 代码块
-        elif tag_name == 'pre':
-            code = element.get_text()
-            md_content.append(f"```\n{code}\n```\n")
-
-        # 分隔线
-        elif tag_name == 'hr':
-            md_content.append("---\n")
-
-        # 视频（微信视频 iframe）
-        elif tag_name == 'iframe':
-            nonlocal video_index
-            video_index += 1
-            md_content.append(f"> 🎥 [视频 {video_index}]\n")
-            md_content.append("> 注：微信视频无法在 Markdown 中直接查看\n")
-            if article_url:
-                md_content.append(f"> 请访问原文观看: {article_url}\n")
-            md_content.append("\n")
-
-        # 图片
-        elif tag_name == 'img':
-            src = element.get('data-src') or element.get('src', '')
-            alt = element.get('alt', '')
-            if src:
-                if src in img_map:
-                    if obsidian_mode:
-                        md_content.append(f"![[{img_map[src]}]]\n")
-                    else:
-                        md_content.append(f"![{alt}]({img_map[src]})\n")
-                else:
-                    md_content.append(f"![{alt}]({src})\n")
-
-        # 处理子元素（对于容器元素）
-        for child in element.children:
-            if hasattr(child, 'name') and child.name:
-                # 跳过已经特殊处理的容器内的元素
-                if tag_name not in ['ul', 'ol', 'blockquote', 'li']:
-                    process_element(child)
-
     def process_inline_elements(element):
-        """处理段落内的内联元素（粗体、斜体、链接、图片）"""
+        """处理元素内的内联元素（粗体、斜体、链接、图片）"""
         parts = []
         for child in element.children:
             if hasattr(child, 'name') and child.name:
@@ -188,12 +125,14 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                 # 粗体
                 if tag_name in ['b', 'strong']:
                     text = child.get_text(strip=True)
-                    parts.append(f"**{text}**")
+                    if text:
+                        parts.append(f"**{text}**")
 
                 # 斜体
                 elif tag_name in ['i', 'em']:
                     text = child.get_text(strip=True)
-                    parts.append(f"*{text}*")
+                    if text:
+                        parts.append(f"*{text}*")
 
                 # 链接
                 elif tag_name == 'a':
@@ -228,10 +167,153 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
 
         return ''.join(parts)
 
-    # 从根元素开始遍历
-    for element in soup.children:
-        if hasattr(element, 'name') and element.name:
-            process_element(element)
+    def process_element(element, depth=0):
+        """处理单个元素"""
+        tag_name = element.name
+
+        # 图片 - 最高优先级
+        if tag_name == 'img':
+            src = element.get('data-src') or element.get('src', '')
+            alt = element.get('alt', '')
+            if src:
+                if src in img_map:
+                    if obsidian_mode:
+                        md_content.append(f"![[{img_map[src]}]]\n")
+                    else:
+                        md_content.append(f"![{alt}]({img_map[src]})\n")
+                else:
+                    md_content.append(f"![{alt}]({src})\n")
+            return
+
+        # 视频 iframe
+        if tag_name == 'iframe':
+            video_index += 1
+            md_content.append(f"\n> 🎥 [视频 {video_index}]\n")
+            md_content.append("> 注：微信视频无法在 Markdown 中直接查看\n")
+            if article_url:
+                md_content.append(f"> 请访问原文观看: {article_url}\n")
+            md_content.append("\n")
+            return
+
+        # 标题
+        if tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+            level = int(tag_name[1])
+            text = element.get_text(strip=True)
+            if text:
+                md_content.append(f"\n{'#' * level} {text}\n\n")
+            return
+
+        # 段落
+        if tag_name == 'p':
+            content = process_inline_elements(element)
+            if content:
+                md_content.append(f"{content}\n\n")
+            return
+
+        # section 标签 - 微信公众号常用
+        if tag_name == 'section':
+            # 检查是否有直接文本内容
+            direct_text = ''
+            for child in element.children:
+                if not hasattr(child, 'name') or child.name is None:
+                    text = str(child).strip()
+                    if text:
+                        direct_text += text
+
+            if direct_text:
+                md_content.append(f"{direct_text}\n\n")
+            else:
+                # 递归处理 section 内的子元素
+                for child in element.children:
+                    if hasattr(child, 'name') and child.name:
+                        # 避免重复处理已在父级处理的元素
+                        if child.name not in ['section']:
+                            process_element(child, depth + 1)
+            return
+
+        # 无序列表
+        if tag_name == 'ul':
+            for li in element.find_all('li', recursive=False):
+                text = li.get_text(strip=True)
+                if text:
+                    md_content.append(f"- {text}\n")
+            md_content.append("\n")
+            return
+
+        # 有序列表
+        if tag_name == 'ol':
+            for i, li in enumerate(element.find_all('li', recursive=False), 1):
+                text = li.get_text(strip=True)
+                if text:
+                    md_content.append(f"{i}. {text}\n")
+            md_content.append("\n")
+            return
+
+        # 引用
+        if tag_name == 'blockquote':
+            text = element.get_text(strip=True)
+            if text:
+                md_content.append(f"\n> {text}\n\n")
+            return
+
+        # 代码块
+        if tag_name == 'pre':
+            code = element.get_text()
+            if code:
+                md_content.append(f"\n```\n{code}\n```\n\n")
+            return
+
+        # 分隔线
+        if tag_name == 'hr':
+            md_content.append("\n---\n\n")
+            return
+
+        # div/span - 递归处理内容
+        if tag_name in ['div', 'span']:
+            content = process_inline_elements(element)
+            if content and depth == 0:
+                # 只在最顶层添加换行
+                md_content.append(f"{content}\n\n")
+            elif content:
+                md_content.append(content)
+            return
+
+        # br 标签
+        if tag_name == 'br':
+            md_content.append("\n")
+            return
+
+        # 其他容器元素 - 递归处理
+        if tag_name in ['article', 'main', 'figure', 'figcaption']:
+            for child in element.children:
+                if hasattr(child, 'name') and child.name:
+                    process_element(child, depth + 1)
+            return
+
+    # 遍历所有直接子元素
+    for child in soup.children:
+        if hasattr(child, 'name') and child.name:
+            process_element(child)
+
+    # 如果没有内容，尝试直接处理所有文本和图片
+    if not md_content:
+        for element in soup.descendants:
+            if hasattr(element, 'name'):
+                if element.name == 'img':
+                    src = element.get('data-src') or element.get('src', '')
+                    alt = element.get('alt', '')
+                    if src:
+                        if src in img_map:
+                            if obsidian_mode:
+                                md_content.append(f"![[{img_map[src]}]]\n")
+                            else:
+                                md_content.append(f"![{alt}]({img_map[src]})\n")
+                        else:
+                            md_content.append(f"![{alt}]({src})\n")
+                elif element.name == 'p':
+                    text = element.get_text(strip=True)
+                    if text:
+                        md_content.append(f"{text}\n\n")
 
     return '\n'.join(md_content)
 
@@ -367,6 +449,8 @@ def fetch_wechat_article(url, output_dir='.', download_images=True, obsidian_mod
             print("创建图片目录: images/")
         # 使用清理后的标题作为文章唯一标识
         article_id = sanitize_filename(title)
+        # 清理旧图片
+        clear_images_directory(img_dir)
 
     # 构建 Markdown
     md_lines = []
