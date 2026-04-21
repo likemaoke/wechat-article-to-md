@@ -99,6 +99,7 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
     md_content = []
     img_index = 0
     img_map = {}  # URL -> 本地文件名映射
+    img_used = set()  # 已使用的图片 URL
     video_index = 0  # 视频计数器
 
     # 首先收集所有图片并下载
@@ -114,6 +115,18 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                         img_map[src] = local_img
                     else:
                         img_map[src] = f"images/{local_img}"
+
+    def add_image(src, alt=''):
+        """添加图片到内容，并标记为已使用"""
+        if src:
+            img_used.add(src)
+            if src in img_map:
+                if obsidian_mode:
+                    md_content.append(f"![[{img_map[src]}]]\n")
+                else:
+                    md_content.append(f"![{alt}]({img_map[src]})\n")
+            else:
+                md_content.append(f"![{alt}]({src})\n")
 
     def process_inline_elements(element):
         """处理元素内的内联元素（粗体、斜体、链接、图片）"""
@@ -146,6 +159,7 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                     src = child.get('data-src') or child.get('src', '')
                     alt = child.get('alt', '')
                     if src:
+                        img_used.add(src)
                         if src in img_map:
                             if obsidian_mode:
                                 parts.append(f"![[{img_map[src]}]]")
@@ -175,14 +189,7 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
         if tag_name == 'img':
             src = element.get('data-src') or element.get('src', '')
             alt = element.get('alt', '')
-            if src:
-                if src in img_map:
-                    if obsidian_mode:
-                        md_content.append(f"![[{img_map[src]}]]\n")
-                    else:
-                        md_content.append(f"![{alt}]({img_map[src]})\n")
-                else:
-                    md_content.append(f"![{alt}]({src})\n")
+            add_image(src, alt)
             return
 
         # 视频 iframe
@@ -302,18 +309,19 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                 if element.name == 'img':
                     src = element.get('data-src') or element.get('src', '')
                     alt = element.get('alt', '')
-                    if src:
-                        if src in img_map:
-                            if obsidian_mode:
-                                md_content.append(f"![[{img_map[src]}]]\n")
-                            else:
-                                md_content.append(f"![{alt}]({img_map[src]})\n")
-                        else:
-                            md_content.append(f"![{alt}]({src})\n")
+                    add_image(src, alt)
                 elif element.name == 'p':
                     text = element.get_text(strip=True)
                     if text:
                         md_content.append(f"{text}\n\n")
+
+    # 检查是否有未使用的图片，追加到末尾
+    unused_images = [src for src in img_map.keys() if src not in img_used]
+    if unused_images:
+        md_content.append("\n---\n\n")
+        md_content.append("# 未引用的图片\n\n")
+        for src in unused_images:
+            add_image(src, '')
 
     return '\n'.join(md_content)
 
