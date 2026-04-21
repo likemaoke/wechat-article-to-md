@@ -99,7 +99,6 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
     md_content = []
     img_index = 0
     img_map = {}  # URL -> 本地文件名映射
-    img_used = set()  # 已使用的图片 URL
     video_index = 0  # 视频计数器
 
     # 首先收集所有图片并下载
@@ -111,15 +110,13 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                 local_img = download_image(src, img_dir, img_index, article_id)
                 if local_img:
                     if obsidian_mode:
-                        # Obsidian 格式：只需要文件名，不需要路径前缀
                         img_map[src] = local_img
                     else:
                         img_map[src] = f"images/{local_img}"
 
     def add_image(src, alt=''):
-        """添加图片到内容，并标记为已使用"""
+        """添加图片到内容"""
         if src:
-            img_used.add(src)
             if src in img_map:
                 if obsidian_mode:
                     md_content.append(f"![[{img_map[src]}]]\n")
@@ -129,37 +126,33 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                 md_content.append(f"![{alt}]({src})\n")
 
     def process_inline_elements(element):
-        """处理元素内的内联元素（粗体、斜体、链接、图片）"""
+        """处理元素内的内联元素（粗体、斜体、链接）"""
         parts = []
         for child in element.children:
             if hasattr(child, 'name') and child.name:
                 tag_name = child.name
 
-                # 粗体
                 if tag_name in ['b', 'strong']:
                     text = child.get_text(strip=True)
                     if text:
                         parts.append(f"**{text}**")
 
-                # 斜体
                 elif tag_name in ['i', 'em']:
                     text = child.get_text(strip=True)
                     if text:
                         parts.append(f"*{text}*")
 
-                # 链接
                 elif tag_name == 'a':
                     href = child.get('href', '')
                     text = child.get_text(strip=True)
                     if text:
                         parts.append(f"[{text}]({href})")
 
-                # 图片
                 elif tag_name == 'img':
+                    # 处理内联图片
                     src = child.get('data-src') or child.get('src', '')
                     alt = child.get('alt', '')
                     if src:
-                        img_used.add(src)
                         if src in img_map:
                             if obsidian_mode:
                                 parts.append(f"![[{img_map[src]}]]")
@@ -168,160 +161,127 @@ def html_to_markdown(soup, img_dir=None, article_id=None, obsidian_mode=False, a
                         else:
                             parts.append(f"![{alt}]({src})")
 
-                # 递归处理其他嵌套元素
                 else:
                     result = process_inline_elements(child)
                     if result:
                         parts.append(result)
             else:
-                # 文本节点
                 text = str(child).strip()
                 if text:
                     parts.append(text)
 
         return ''.join(parts)
 
-    def process_element(element, depth=0):
-        """处理单个元素"""
-        tag_name = element.name
+    # 使用更简单的方式：遍历所有直接子元素，递归处理
+    # 但不使用过早的 return，确保所有内容都被处理
+    processed_elements = set()  # 已处理的元素，避免重复
 
-        # 图片 - 最高优先级
-        if tag_name == 'img':
-            src = element.get('data-src') or element.get('src', '')
-            alt = element.get('alt', '')
-            add_image(src, alt)
-            return
+    def traverse(element, in_list=False, in_blockquote=False):
+        """遍历元素树，按顺序处理"""
+        for child in element.children:
+            if not hasattr(child, 'name') or child.name is None:
+                # 文本节点
+                text = str(child).strip()
+                if text and not in_list and not in_blockquote:
+                    md_content.append(f"{text}\n\n")
+                continue
 
-        # 视频 iframe
-        if tag_name == 'iframe':
-            video_index += 1
-            md_content.append(f"\n> 🎥 [视频 {video_index}]\n")
-            md_content.append("> 注：微信视频无法在 Markdown 中直接查看\n")
-            if article_url:
-                md_content.append(f"> 请访问原文观看: {article_url}\n")
-            md_content.append("\n")
-            return
+            tag_name = child.name
 
-        # 标题
-        if tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
-            level = int(tag_name[1])
-            text = element.get_text(strip=True)
-            if text:
-                md_content.append(f"\n{'#' * level} {text}\n\n")
-            return
+            # 图片
+            if tag_name == 'img':
+                src = child.get('data-src') or child.get('src', '')
+                alt = child.get('alt', '')
+                add_image(src, alt)
+                continue
 
-        # 段落
-        if tag_name == 'p':
-            content = process_inline_elements(element)
-            if content:
-                md_content.append(f"{content}\n\n")
-            return
+            # 视频 iframe
+            if tag_name == 'iframe':
+                video_index += 1
+                md_content.append(f"\n> 🎥 [视频 {video_index}]\n")
+                md_content.append("> 注：微信视频无法在 Markdown 中直接查看\n")
+                if article_url:
+                    md_content.append(f"> 请访问原文观看: {article_url}\n")
+                md_content.append("\n")
+                continue
 
-        # section 标签 - 微信公众号常用
-        if tag_name == 'section':
-            # 检查是否有直接文本内容
-            direct_text = ''
-            for child in element.children:
-                if not hasattr(child, 'name') or child.name is None:
-                    text = str(child).strip()
-                    if text:
-                        direct_text += text
-
-            if direct_text:
-                md_content.append(f"{direct_text}\n\n")
-            else:
-                # 递归处理 section 内的子元素
-                for child in element.children:
-                    if hasattr(child, 'name') and child.name:
-                        # 避免重复处理已在父级处理的元素
-                        if child.name not in ['section']:
-                            process_element(child, depth + 1)
-            return
-
-        # 无序列表
-        if tag_name == 'ul':
-            for li in element.find_all('li', recursive=False):
-                text = li.get_text(strip=True)
+            # 标题 - 需要特殊处理，因为微信标题内可能嵌套图片
+            if tag_name in ['h1', 'h2', 'h3', 'h4', 'h5', 'h6']:
+                level = int(tag_name[1])
+                # 提取纯文本内容（不包括图片）
+                # 微信标题通常是 h > span > span 结构，需要获取所有 span 的文本
+                text = child.get_text(strip=True)
+                # 移除图片相关的文本（如果图片有 alt 文本）
+                for img in child.find_all('img'):
+                    alt = img.get('alt', '')
+                    if alt and alt in text:
+                        text = text.replace(alt, '')
+                text = text.strip()
                 if text:
-                    md_content.append(f"- {text}\n")
-            md_content.append("\n")
-            return
-
-        # 有序列表
-        if tag_name == 'ol':
-            for i, li in enumerate(element.find_all('li', recursive=False), 1):
-                text = li.get_text(strip=True)
-                if text:
-                    md_content.append(f"{i}. {text}\n")
-            md_content.append("\n")
-            return
-
-        # 引用
-        if tag_name == 'blockquote':
-            text = element.get_text(strip=True)
-            if text:
-                md_content.append(f"\n> {text}\n\n")
-            return
-
-        # 代码块
-        if tag_name == 'pre':
-            code = element.get_text()
-            if code:
-                md_content.append(f"\n```\n{code}\n```\n\n")
-            return
-
-        # 分隔线
-        if tag_name == 'hr':
-            md_content.append("\n---\n\n")
-            return
-
-        # div/span - 递归处理内容
-        if tag_name in ['div', 'span']:
-            content = process_inline_elements(element)
-            if content and depth == 0:
-                # 只在最顶层添加换行
-                md_content.append(f"{content}\n\n")
-            elif content:
-                md_content.append(content)
-            return
-
-        # br 标签
-        if tag_name == 'br':
-            md_content.append("\n")
-            return
-
-        # 其他容器元素 - 递归处理
-        if tag_name in ['article', 'main', 'figure', 'figcaption']:
-            for child in element.children:
-                if hasattr(child, 'name') and child.name:
-                    process_element(child, depth + 1)
-            return
-
-    # 遍历所有直接子元素
-    for child in soup.children:
-        if hasattr(child, 'name') and child.name:
-            process_element(child)
-
-    # 如果没有内容，尝试直接处理所有文本和图片
-    if not md_content:
-        for element in soup.descendants:
-            if hasattr(element, 'name'):
-                if element.name == 'img':
-                    src = element.get('data-src') or element.get('src', '')
-                    alt = element.get('alt', '')
+                    md_content.append(f"\n{'#' * level} {text}\n\n")
+                # 检查标题内是否有图片，单独处理
+                for img in child.find_all('img'):
+                    src = img.get('data-src') or img.get('src', '')
+                    alt = img.get('alt', '')
                     add_image(src, alt)
-                elif element.name == 'p':
-                    text = element.get_text(strip=True)
-                    if text:
-                        md_content.append(f"{text}\n\n")
+                continue
 
-    # 检查是否有未使用的图片，追加到末尾
-    unused_images = [src for src in img_map.keys() if src not in img_used]
-    if unused_images:
-        md_content.append("\n---\n\n")
-        md_content.append("# 未引用的图片\n\n")
-        for src in unused_images:
-            add_image(src, '')
+            # 段落 - 处理内联元素，但也要检查内部的图片
+            if tag_name == 'p':
+                # 先处理内联元素（不含图片）
+                content = process_inline_elements(child)
+                if content:
+                    md_content.append(f"{content}\n\n")
+                continue
+
+            # 无序列表
+            if tag_name == 'ul':
+                for li in child.find_all('li', recursive=False):
+                    text = li.get_text(strip=True)
+                    if text:
+                        md_content.append(f"- {text}\n")
+                md_content.append("\n")
+                continue
+
+            # 有序列表
+            if tag_name == 'ol':
+                for i, li in enumerate(child.find_all('li', recursive=False), 1):
+                    text = li.get_text(strip=True)
+                    if text:
+                        md_content.append(f"{i}. {text}\n")
+                md_content.append("\n")
+                continue
+
+            # 引用
+            if tag_name == 'blockquote':
+                text = child.get_text(strip=True)
+                if text:
+                    md_content.append(f"\n> {text}\n\n")
+                continue
+
+            # 代码块
+            if tag_name == 'pre':
+                code = child.get_text()
+                if code:
+                    md_content.append(f"\n```\n{code}\n```\n\n")
+                continue
+
+            # 分隔线
+            if tag_name == 'hr':
+                md_content.append("\n---\n\n")
+                continue
+
+            # br 标签
+            if tag_name == 'br':
+                md_content.append("\n")
+                continue
+
+            # 容器元素 - 递归遍历其子元素
+            # 包括 section, div, span, article, main, figure 等
+            traverse(child, in_list, in_blockquote)
+
+    # 从根元素开始遍历
+    traverse(soup)
 
     return '\n'.join(md_content)
 
